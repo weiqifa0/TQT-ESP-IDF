@@ -1,0 +1,7 @@
+{
+  "files.associations": {
+    "lvgl.h": "c",
+    "lvgl_helpers.h": "c",
+    "gc9a01.h": "c"
+  }
+}
