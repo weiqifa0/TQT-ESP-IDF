@@ -52,3 +52,7 @@ Please use the following feedback channels:
 
 We will get back to you as soon as possible.
 # TQT-ESP-IDF
+
+这个项目是在https://github.com/Xinyuan-LilyGO/T-QT 基础上的调试
+
+因为连接TFT LCD 的不是芯片的SPIGPIO，需要用模拟GPIO实现，之后在这个仓库上进行调试。
