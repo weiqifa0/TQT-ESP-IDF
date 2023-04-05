@@ -4,5 +4,6 @@
     "lvgl_helpers.h": "c",
     "gc9a01.h": "c"
   },
-  "idf.adapterTargetName": "esp32s3"
+  "idf.adapterTargetName": "esp32s3",
+  "C_Cpp.errorSquiggles": "disabled"
 }

@@ -22,24 +22,6 @@
  *      TYPEDEFS
  **********************/
 
-#define TFT_X_OFFSET  2
-#define TFT_Y_OFFSET  1
-
-#define TFT_MADCTL    0x36
-#define TFT_MAD_MY    0x80
-#define TFT_MAD_MX    0x40
-#define TFT_MAD_MV    0x20
-#define TFT_MAD_ML    0x10
-#define TFT_MAD_BGR   0x08
-#define TFT_MAD_MH    0x04
-#define TFT_MAD_RGB   0x00
-// cmd
-#define TFT_SLPIN     0x10
-#define TFT_INVOFF    0x20
-#define TFT_INVON     0x21
-
-static uint8_t horizontal = 0;
-
 /*The LCD needs a bunch of command/argument values to be initialized. They are stored in this struct. */
 typedef struct {
     uint8_t cmd;
@@ -55,8 +37,7 @@ static void GC9A01_set_orientation(uint8_t orientation);
 static void GC9A01_send_cmd(uint8_t cmd);
 static void GC9A01_send_data(void * data, uint16_t length);
 static void GC9A01_send_color(void * data, uint16_t length);
-static void spi_send_byte_8bit(uint8_t data);
-static void spi_send_byte_xbits(uint8_t data, size_t length);
+void GC9A01_enable_backlight(bool backlight);
 
 /**********************
  *  STATIC VARIABLES
@@ -67,44 +48,8 @@ static void spi_send_byte_xbits(uint8_t data, size_t length);
  **********************/
 
 /**********************
-static inline void spi_send_byte_xbits(uint8_t data, size_t length)
  *   GLOBAL FUNCTIONS
  **********************/
-
-void lcd_address_set(uint16_t x1, uint16_t y1, uint16_t x2, uint16_t y2) {
-  if (horizontal == 0 || horizontal == 2) {
-    spi_send_byte_8bit(0x2a); // 列地址设置
-    spi_send_byte_xbits(x1 + TFT_X_OFFSET, 2);
-    spi_send_byte_xbits(x2 + TFT_X_OFFSET, 2);
-    spi_send_byte_8bit(0x2b); // 行地址设置
-    spi_send_byte_xbits(y1 + TFT_Y_OFFSET, 2);
-    spi_send_byte_xbits(y2 + TFT_Y_OFFSET, 2);
-    spi_send_byte_8bit(0x2c); // 储存器写
-  } else if (horizontal == 1 || horizontal == 3) {
-    spi_send_byte_8bit(0x2a); // 列地址设置
-    spi_send_byte_xbits(x1 + TFT_Y_OFFSET, 2);
-    spi_send_byte_xbits(x2 + TFT_Y_OFFSET, 2);
-    spi_send_byte_8bit(0x2b); // 行地址设置
-    spi_send_byte_xbits(y1 + TFT_X_OFFSET, 2);
-    spi_send_byte_xbits(y2 + TFT_X_OFFSET, 2);
-    spi_send_byte_8bit(0x2c); // 储存器写
-  }
-}
-
-void lcd_push_colors(uint16_t x, uint16_t y, uint16_t width, uint16_t hight,
-                     uint16_t *data) {
-  int len = (width - x) * (hight - y);
-  lcd_address_set(x, y, x + width - 1, y + hight - 1);
-  spi_send_byte_xbits((uint8_t *)data, len * 2);
-}
-void lcd_fill_color(uint16_t x, uint16_t y, uint16_t width, uint16_t hight,
-                    uint16_t color) {
-  int len = (width - x) * (hight - y);
-  lcd_address_set(x, y, x + width - 1, y + hight - 1);
-  for (uint32_t i = 0; i < (len * 2); i++) {
-    spi_send_byte_8bit(color);
-  }
-}
 
 void GC9A01_init(void)
 {
@@ -167,9 +112,21 @@ void GC9A01_init(void)
 
 	};
 
+#if GC9A01_BCKL == 15
+	gpio_config_t io_conf;
+    io_conf.intr_type = GPIO_PIN_INTR_DISABLE;
+    io_conf.mode = GPIO_MODE_OUTPUT;
+    io_conf.pin_bit_mask = GPIO_SEL_15;
+    io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+    io_conf.pull_up_en = GPIO_PULLUP_DISABLE;
+    gpio_config(&io_conf);
+#endif
+
 	//Initialize non-SPI GPIOs
 	gpio_pad_select_gpio(GC9A01_DC);
 	gpio_set_direction(GC9A01_DC, GPIO_MODE_OUTPUT);
+	gpio_pad_select_gpio(GC9A01_RST);
+	gpio_set_direction(GC9A01_RST, GPIO_MODE_OUTPUT);
 
 	gpio_pad_select_gpio(CONFIG_LV_DISP_SPI_MOSI);
 	gpio_set_direction(CONFIG_LV_DISP_SPI_MOSI, GPIO_MODE_OUTPUT);
@@ -180,16 +137,17 @@ void GC9A01_init(void)
 	gpio_pad_select_gpio(CONFIG_LV_DISP_SPI_CS);
 	gpio_set_direction(CONFIG_LV_DISP_SPI_CS, GPIO_MODE_OUTPUT);
 
-#if GC9A01_USE_RST
-  gpio_pad_select_gpio(GC9A01_RST);
-	gpio_set_direction(GC9A01_RST, GPIO_MODE_OUTPUT);
-
+#if GC9A01_ENABLE_BACKLIGHT_CONTROL
+    gpio_pad_select_gpio(GC9A01_BCKL);
+    gpio_set_direction(GC9A01_BCKL, GPIO_MODE_OUTPUT);
+#endif
 	//Reset the display
 	gpio_set_level(GC9A01_RST, 0);
 	vTaskDelay(100 / portTICK_RATE_MS);
 	gpio_set_level(GC9A01_RST, 1);
 	vTaskDelay(100 / portTICK_RATE_MS);
-#endif
+
+  gpio_set_level(CONFIG_LV_DISP_SPI_CS, 0);
 
 	ESP_LOGI(TAG, "Initialization.");
 
@@ -203,95 +161,9 @@ void GC9A01_init(void)
 		}
 		cmd++;
 	}
-#if 0
-  spi_send_byte_8bit(0xFE);
-  spi_send_byte_8bit(0xEF);
 
-  spi_send_byte_8bit(0xB0);
-  spi_send_byte_8bit(0xC0);
+	GC9A01_enable_backlight(true);
 
-  spi_send_byte_8bit(0xB2);
-  spi_send_byte_8bit(0x27); // 24
-
-  spi_send_byte_8bit(0xB3);
-  spi_send_byte_8bit(0x03);
-
-  spi_send_byte_8bit(0xB7);
-  spi_send_byte_8bit(0x01);
-
-  spi_send_byte_8bit(0xB6);
-  spi_send_byte_8bit(0x19);
-
-  spi_send_byte_8bit(0xAC);
-  spi_send_byte_8bit(0xDB);
-  spi_send_byte_8bit(0xAB);
-  spi_send_byte_8bit(0x0f);
-  spi_send_byte_8bit(0x3A);
-  spi_send_byte_8bit(0x05);
-
-  spi_send_byte_8bit(0xB4);
-  spi_send_byte_8bit(0x04);
-
-  spi_send_byte_8bit(0xA8);
-  spi_send_byte_8bit(0x0C);
-
-  spi_send_byte_8bit(0xb8);
-  spi_send_byte_8bit(0x08);
-
-  spi_send_byte_8bit(0xea);
-  spi_send_byte_8bit(0x0e);
-
-  spi_send_byte_8bit(0xe8);
-  spi_send_byte_8bit(0x2a);
-
-  spi_send_byte_8bit(0xe9);
-  spi_send_byte_8bit(0x46);
-
-  spi_send_byte_8bit(0xc6);
-  spi_send_byte_8bit(0x25);
-
-  spi_send_byte_8bit(0xc7);
-  spi_send_byte_8bit(0x10);
-
-  spi_send_byte_8bit(0xF0);
-  spi_send_byte_8bit(0x09);
-  spi_send_byte_8bit(0x32);
-  spi_send_byte_8bit(0x29);
-  spi_send_byte_8bit(0x46);
-  spi_send_byte_8bit(0xc9);
-  spi_send_byte_8bit(0x37);
-  spi_send_byte_8bit(0x33);
-  spi_send_byte_8bit(0x60);
-  spi_send_byte_8bit(0x00);
-  spi_send_byte_8bit(0x14);
-  spi_send_byte_8bit(0x0a);
-  spi_send_byte_8bit(0x16);
-  spi_send_byte_8bit(0x10);
-  spi_send_byte_8bit(0x1F);
-
-  spi_send_byte_8bit(0xF1);
-  spi_send_byte_8bit(0x15);
-  spi_send_byte_8bit(0x28);
-  spi_send_byte_8bit(0x5d);
-  spi_send_byte_8bit(0x3f);
-  spi_send_byte_8bit(0xc8);
-  spi_send_byte_8bit(0x16);
-  spi_send_byte_8bit(0x3f);
-  spi_send_byte_8bit(0x60);
-  spi_send_byte_8bit(0x0a);
-  spi_send_byte_8bit(0x06);
-  spi_send_byte_8bit(0x0d);
-  spi_send_byte_8bit(0x1f);
-  spi_send_byte_8bit(0x1c);
-  spi_send_byte_8bit(0x10);
-
-  spi_send_byte_8bit(0x21);
-  vTaskDelay(120 / portTICK_RATE_MS);
-  spi_send_byte_8bit(0x11);
-  vTaskDelay(120 / portTICK_RATE_MS);
-  spi_send_byte_8bit(0x29);
-  vTaskDelay(120 / portTICK_RATE_MS);
-#endif
 	GC9A01_set_orientation(CONFIG_LV_DISPLAY_ORIENTATION);
 
 #if GC9A01_INVERT_COLORS == 1
@@ -299,7 +171,6 @@ void GC9A01_init(void)
 #else
 	GC9A01_send_cmd(0x20);
 #endif
-  lcd_fill_color(0,0,128,128,0x44);
 }
 
 
@@ -328,8 +199,24 @@ void GC9A01_flush(lv_disp_drv_t * drv, const lv_area_t * area, lv_color_t * colo
 
 
 	uint32_t size = lv_area_get_width(area) * lv_area_get_height(area);
-
+  printf("%s(),size=%d\n", __FUNCTION__, size);
 	GC9A01_send_color((void*)color_map, size * 2);
+}
+
+void GC9A01_enable_backlight(bool backlight)
+{
+#if GC9A01_ENABLE_BACKLIGHT_CONTROL
+    ESP_LOGI(TAG, "%s backlight.", backlight ? "Enabling" : "Disabling");
+    uint32_t tmp = 0;
+
+#if (GC9A01_BCKL_ACTIVE_LVL==1)
+    tmp = backlight ? 1 : 0;
+#else
+    tmp = backlight ? 0 : 1;
+#endif
+
+    gpio_set_level(GC9A01_BCKL, tmp);
+#endif
 }
 
 void GC9A01_sleep_in()
@@ -350,52 +237,41 @@ void GC9A01_sleep_out()
  *   STATIC FUNCTIONS
  **********************/
 
-static void spi_send_byte_xbits(uint8_t data, size_t length)
+static void spi_color_n_bytes(uint8_t * data, uint16_t n)
 {
-    gpio_set_level(CONFIG_LV_DISP_SPI_CS, 0);
-    for (int i = 0; i < sizeof(uint8_t) * length * 8; i++) {
+  printf("%s(),start...n=%d\n", __FUNCTION__, n);
+  for (int j = 0; j < n; j++) {
+    uint8_t tmp = *(data +j);
+    printf("0x%.2x\n", tmp);
+    for (int i = 0; i < sizeof (uint8_t) * 8; i++) {
         gpio_set_level(CONFIG_LV_DISP_SPI_CLK, 0);
-        gpio_set_level(CONFIG_LV_DISP_SPI_MOSI, data & 0x80);
-        data <<= 1;
+        gpio_set_level(CONFIG_LV_DISP_SPI_MOSI, tmp & 0x80);
+        tmp <<= 1;
         gpio_set_level(CONFIG_LV_DISP_SPI_CLK, 1);
     }
-    gpio_set_level(CONFIG_LV_DISP_SPI_CS, 1);
-}
-
-static void spi_send_byte_8bit(uint8_t data)
-{
-    gpio_set_level(CONFIG_LV_DISP_SPI_CS, 0);
-    for (int i = 0; i < sizeof(uint8_t) * 8; i++) {
-        gpio_set_level(CONFIG_LV_DISP_SPI_CLK, 0);
-        gpio_set_level(CONFIG_LV_DISP_SPI_MOSI, data & 0x80);
-        data <<= 1;
-        gpio_set_level(CONFIG_LV_DISP_SPI_CLK, 1);
-    }
-    gpio_set_level(CONFIG_LV_DISP_SPI_CS, 1);
+  }
+  printf("%s(),start...\n", __FUNCTION__);
 }
 
 static void GC9A01_send_cmd(uint8_t cmd)
 {
-    disp_wait_for_pending_transactions();
+    //disp_wait_for_pending_transactions();
     gpio_set_level(GC9A01_DC, 0);	 /*Command mode*/
-    //disp_spi_send_data(&cmd, 1);
-    spi_send_byte_xbits(cmd, 1);
+    spi_color_n_bytes(&cmd, 1);
 }
 
 static void GC9A01_send_data(void * data, uint16_t length)
 {
-    disp_wait_for_pending_transactions();
+    //disp_wait_for_pending_transactions();
     gpio_set_level(GC9A01_DC, 1);	 /*Data mode*/
-    //disp_spi_send_data(data, length);
-    spi_send_byte_xbits(*(uint8_t*)data, length);
+    spi_color_n_bytes(data, length);
 }
 
 static void GC9A01_send_color(void * data, uint16_t length)
 {
-    disp_wait_for_pending_transactions();
+    //disp_wait_for_pending_transactions();
     gpio_set_level(GC9A01_DC, 1);   /*Data mode*/
-    //disp_spi_send_colors(data, length);
-    spi_send_byte_xbits(*(uint8_t*)data, length);
+    spi_color_n_bytes(data, length);
 }
 
 static void GC9A01_set_orientation(uint8_t orientation)

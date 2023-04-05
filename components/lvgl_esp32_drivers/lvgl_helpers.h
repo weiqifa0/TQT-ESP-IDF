@@ -23,8 +23,8 @@ extern "C" {
  *      DEFINES
  *********************/
 
-#define LV_HOR_RES_MAX 240
-#define LV_VER_RES_MAX 240
+#define LV_HOR_RES_MAX 640
+#define LV_VER_RES_MAX 640
 #define SPI_HOST_MAX 3
 
 /* DISP_BUF_SIZE value doesn't have an special meaning, but it's the size

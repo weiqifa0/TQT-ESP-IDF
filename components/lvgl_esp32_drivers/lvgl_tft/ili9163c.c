@@ -1,100 +1,45 @@
 /**
- * @file ILI9163C.c
+ * @file ili9341.c
  *
  */
 
 /*********************
  *      INCLUDES
  *********************/
-#include "ili9163c.h"
+#include "ili9341.h"
 #include "disp_spi.h"
 #include "driver/gpio.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "assert.h"
 
 /*********************
  *      DEFINES
  *********************/
-#define TAG "ILI9163C"
-
-// ILI9163C specific commands used in init
-#define ILI9163C_NOP 0x00
-#define ILI9163C_SWRESET 0x01
-#define ILI9163C_RDDID 0x04
-#define ILI9163C_RDDST 0x09
-
-#define ILI9163C_SLPIN 0x10
-#define ILI9163C_SLPOUT 0x11
-#define ILI9163C_PTLON 0x12
-#define ILI9163C_NORON 0x13
-
-#define ILI9163C_INVOFF 0x20
-#define ILI9163C_INVON 0x21
-#define ILI9163C_CMD_GAMST 0x26
-#define ILI9163C_DISPOFF 0x28
-#define ILI9163C_DISPON 0x29
-#define ILI9163C_CASET 0x2A
-#define ILI9163C_RASET 0x2B
-#define ILI9163C_RAMWR 0x2C
-#define ILI9163C_COLORSET 0x2D
-#define ILI9163C_RAMRD 0x2E
-
-#define ILI9163C_PTLAR 0x30
-#define ILI9163C_VSCRDEF 0x33
-#define ILI9163C_COLMOD 0x3A
-#define ILI9163C_MADCTL 0x36
-#define ILI9163C_VSCRSADD 0x37
-
-#define ILI9163C_FRMCTR1 0xB1
-#define ILI9163C_FRMCTR2 0xB2
-#define ILI9163C_FRMCTR3 0xB3
-#define ILI9163C_INVCTR 0xB4
-#define ILI9163C_DISSET5 0xB6
-#define ILI9163C_SDDC 0xB7
-
-#define ILI9163C_PWCTR1 0xC0
-#define ILI9163C_PWCTR2 0xC1
-#define ILI9163C_PWCTR3 0xC2
-#define ILI9163C_PWCTR4 0xC3
-#define ILI9163C_PWCTR5 0xC4
-#define ILI9163C_VMCTR1 0xC5
-#define ILI9163C_VMCOFFS 0xC7
-
-#define ILI9163C_GAMCTL 0xF2
-
-#define ILI9163C_GMCTRP1 0xE0
-#define ILI9163C_GMCTRN1 0xE1
-
-#define ST77XX_MADCTL_MY 0x80
-#define ST77XX_MADCTL_MX 0x40
-#define ST77XX_MADCTL_MV 0x20 #define
-#define ST77XX_MADCTL_ML 0x10
-#define ST77XX_MADCTL_RGB 0x00
-#define ST77XX_MADCTL_BGR 0x08
+ #define TAG "ILI9341"
 
 /**********************
  *      TYPEDEFS
  **********************/
 
 /*The LCD needs a bunch of command/argument values to be initialized. They are stored in this struct. */
-typedef struct
-{
-	uint8_t cmd;
-	uint8_t data[16];
-	uint8_t databytes; //No of data in data; bit 7 = delay after set; 0xFF = end of cmds.
+typedef struct {
+    uint8_t cmd;
+    uint8_t data[16];
+    uint8_t databytes; //No of data in data; bit 7 = delay after set; 0xFF = end of cmds.
 } lcd_init_cmd_t;
 
 /**********************
  *  STATIC PROTOTYPES
  **********************/
-static void ili9163c_set_orientation(uint8_t orientation);
+static void ili9341_set_orientation(uint8_t orientation);
 
-static void ili9163c_send_cmd(uint8_t cmd);
-static void ili9163c_send_data(void *data, uint16_t length);
-static void ili9163c_send_color(void *data, uint16_t length);
-
+static void ili9341_send_cmd(uint8_t cmd);
+static void ili9341_send_data(void * data, uint16_t length);
+static void ili9341_send_data_8bits(uint8_t data);
+static void ili9341_send_color(void * data, uint16_t length);
+static void ili9341_send_color_8bits(uint8_t data);
+static void spi_color_9bits(uint8_t color);
 /**********************
  *  STATIC VARIABLES
  **********************/
@@ -107,142 +52,329 @@ static void ili9163c_send_color(void *data, uint16_t length);
  *   GLOBAL FUNCTIONS
  **********************/
 
-void ili9163c_init(void)
+void reg_init(void)
 {
-	ESP_LOGD(TAG, "Init");
+  ili9341_send_cmd(0xEF);
+  ili9341_send_data_8bits(0x03);
+  ili9341_send_data_8bits(0x80);
+  ili9341_send_data_8bits(0x02);
 
-	lcd_init_cmd_t ili_init_cmds[] = {
-		{ILI9163C_SWRESET, {0}, 0x80},		 // Software reset, 0 args, w/delay 120ms
-		{ILI9163C_SLPOUT, {0}, 0x80},		 // Out of sleep mode, 0 args, w/delay 5ms
-		{ILI9163C_CMD_GAMST, {0x04}, 1},	 // Gamma Curve
-		{ILI9163C_FRMCTR1, {0x0C, 0x14}, 2}, // Frame rate ctrl - normal mode
-		{ILI9163C_INVCTR, {0x07}, 1},		 // Display inversion ctrl, 1 arg, no delay:No inversion
-		{ILI9163C_PWCTR1, {0x0C, 0x05}, 2},	 // Power control, 2 args, no delay
-		{ILI9163C_PWCTR2, {0x02}, 1},		 // Power control, 1 arg
-		{ILI9163C_PWCTR3, {0x02}, 1},		 // Power control, 1 arg
-		{ILI9163C_VMCTR1, {0x20, 0x55}, 2},	 // Power control, 1 arg, no delay:
-		{ILI9163C_VMCOFFS, {0x40}, 1},		 // VCOM Offset
-#if ILI9163C_INVERT_COLORS == 1
-		{ILI9163C_INVON, {0}, 0}, // set inverted mode
+  ili9341_send_cmd(0xCF);
+  ili9341_send_data_8bits(0x00);
+  ili9341_send_data_8bits(0XC1);
+  ili9341_send_data_8bits(0X30);
+
+  ili9341_send_cmd(0xED);
+  ili9341_send_data_8bits(0x64);
+  ili9341_send_data_8bits(0x03);
+  ili9341_send_data_8bits(0X12);
+  ili9341_send_data_8bits(0X81);
+
+  ili9341_send_cmd(0xE8);
+  ili9341_send_data_8bits(0x85);
+  ili9341_send_data_8bits(0x00);
+  ili9341_send_data_8bits(0x78);
+
+  ili9341_send_cmd(0xCB);
+  ili9341_send_data_8bits(0x39);
+  ili9341_send_data_8bits(0x2C);
+  ili9341_send_data_8bits(0x00);
+  ili9341_send_data_8bits(0x34);
+  ili9341_send_data_8bits(0x02);
+
+  ili9341_send_cmd(0xF7);
+  ili9341_send_data_8bits(0x20);
+
+  ili9341_send_cmd(0xEA);
+  ili9341_send_data_8bits(0x00);
+  ili9341_send_data_8bits(0x00);
+
+  ili9341_send_cmd(ILI9341_PWCTR1);    //Power control
+  ili9341_send_data_8bits(0x23);   //VRH[5:0]
+
+  ili9341_send_cmd(ILI9341_PWCTR2);    //Power control
+  ili9341_send_data_8bits(0x10);   //SAP[2:0];BT[3:0]
+
+  ili9341_send_cmd(ILI9341_VMCTR1);    //VCM control
+  ili9341_send_data_8bits(0x3e);
+  ili9341_send_data_8bits(0x28);
+
+  ili9341_send_cmd(ILI9341_VMCTR2);    //VCM control2
+  ili9341_send_data_8bits(0x86);  //--
+
+  ili9341_send_cmd(ILI9341_MADCTL);    // Memory Access Control
+#ifdef M5STACK
+  ili9341_send_data_8bits(TFT_MAD_MY | TFT_MAD_MV | TFT_MAD_COLOR_ORDER); // Rotation 0 (portrait mode)
 #else
-		{ILI9163C_INVOFF, {0}, 0}, // set non-inverted mode
+  ili9341_send_data_8bits(TFT_MAD_MX | TFT_MAD_COLOR_ORDER); // Rotation 0 (portrait mode)
 #endif
-		{ILI9163C_COLMOD, {0x5}, 1}, // set color mode, 1 arg, no delay: 16-bit color
-		{ILI9163C_SDDC, {0}, 1},	  // set source driver direction control
-		{ILI9163C_GAMCTL, {0x01}, 1}, // set source driver direction control
-		{ILI9163C_GMCTRP1, {0x36, 0x29, 0x12, 0x22, 0x1C, 0x15, 0x42, 0xB7, 0x2F, 0x13, 0x12, 0x0A, 0x11, 0x0B, 0x06}, 16}, // 16 args, no delay:
-		{ILI9163C_GMCTRN1, {0x09, 0x16, 0x2D, 0x0D, 0x13, 0x15, 0x40, 0x48, 0x53, 0x0C, 0x1D, 0x25, 0x2E, 0x34, 0x39}, 16}, // 16 args, no delay:
-		{ILI9163C_NORON, {0}, 0x80},																						// Normal display on, no args, w/delay 10 ms delay
-		{ILI9163C_DISPON, {0}, 0x80},																						// Main screen turn on, no args w/delay 100 ms delay
-		{0, {0}, 0xff}
-	};
 
-	//Initialize non-SPI GPIOs
-	gpio_pad_select_gpio(ILI9163C_DC);
-	gpio_set_direction(ILI9163C_DC, GPIO_MODE_OUTPUT);
-	gpio_pad_select_gpio(ILI9163C_RST);
-	gpio_set_direction(ILI9163C_RST, GPIO_MODE_OUTPUT);
+  ili9341_send_cmd(ILI9341_PIXFMT);
+  ili9341_send_data_8bits(0x55);
 
-	//Reset the display
-	gpio_set_level(ILI9163C_RST, 0);
-	vTaskDelay(100 / portTICK_RATE_MS);
-	gpio_set_level(ILI9163C_RST, 1);
-	vTaskDelay(150 / portTICK_RATE_MS);
+  ili9341_send_cmd(ILI9341_FRMCTR1);
+  ili9341_send_data_8bits(0x00);
+  ili9341_send_data_8bits(0x13); // 0x18 79Hz, 0x1B default 70Hz, 0x13 100Hz
 
-	//Send all the commands
-	uint16_t cmd = 0;
-	while (ili_init_cmds[cmd].databytes != 0xff)
-	{
-		ili9163c_send_cmd(ili_init_cmds[cmd].cmd);
-		ili9163c_send_data(ili_init_cmds[cmd].data, ili_init_cmds[cmd].databytes & 0x1F);
-		if (ili_init_cmds[cmd].databytes & 0x80)
-		{
-			vTaskDelay(150 / portTICK_RATE_MS);
-		}
-		cmd++;
-	}
+  ili9341_send_cmd(ILI9341_DFUNCTR);    // Display Function Control
+  ili9341_send_data_8bits(0x08);
+  ili9341_send_data_8bits(0x82);
+  ili9341_send_data_8bits(0x27);
 
-	ili9163c_set_orientation(CONFIG_LV_DISPLAY_ORIENTATION);
+  ili9341_send_cmd(0xF2);    // 3Gamma Function Disable
+  ili9341_send_data_8bits(0x00);
+
+  ili9341_send_cmd(ILI9341_GAMMASET);    //Gamma curve selected
+  ili9341_send_data_8bits(0x01);
+
+  ili9341_send_cmd(ILI9341_GMCTRP1);    //Set Gamma
+  ili9341_send_data_8bits(0x0F);
+  ili9341_send_data_8bits(0x31);
+  ili9341_send_data_8bits(0x2B);
+  ili9341_send_data_8bits(0x0C);
+  ili9341_send_data_8bits(0x0E);
+  ili9341_send_data_8bits(0x08);
+  ili9341_send_data_8bits(0x4E);
+  ili9341_send_data_8bits(0xF1);
+  ili9341_send_data_8bits(0x37);
+  ili9341_send_data_8bits(0x07);
+  ili9341_send_data_8bits(0x10);
+  ili9341_send_data_8bits(0x03);
+  ili9341_send_data_8bits(0x0E);
+  ili9341_send_data_8bits(0x09);
+  ili9341_send_data_8bits(0x00);
+
+  ili9341_send_cmd(ILI9341_GMCTRN1);    //Set Gamma
+  ili9341_send_data_8bits(0x00);
+  ili9341_send_data_8bits(0x0E);
+  ili9341_send_data_8bits(0x14);
+  ili9341_send_data_8bits(0x03);
+  ili9341_send_data_8bits(0x11);
+  ili9341_send_data_8bits(0x07);
+  ili9341_send_data_8bits(0x31);
+  ili9341_send_data_8bits(0xC1);
+  ili9341_send_data_8bits(0x48);
+  ili9341_send_data_8bits(0x08);
+  ili9341_send_data_8bits(0x0F);
+  ili9341_send_data_8bits(0x0C);
+  ili9341_send_data_8bits(0x31);
+  ili9341_send_data_8bits(0x36);
+  ili9341_send_data_8bits(0x0F);
+
+  ili9341_send_cmd(ILI9341_SLPOUT);    //Exit Sleep
+
+  //end_tft_write();
+  //delay(120);
+  //begin_tft_write();
+  vTaskDelay(120 / portTICK_RATE_MS);
+
+  ili9341_send_cmd(ILI9341_DISPON);    //Display on
 }
 
-void ili9163c_flush(lv_disp_drv_t *drv, const lv_area_t *area, lv_color_t *color_map)
+
+static void lcd_set_windows(uint16_t xStar,uint16_t yStar,uint16_t xWidth,uint16_t yHeight)
+{
+  int i, j;
+  uint8_t color = 0x0;
+  ili9341_send_cmd(ILI9341_CASET);		//发送设置X轴坐标的命令0x2A
+  //参数SC[15:0]	->	设置起始列地址，也就是设置X轴起始坐标
+  ili9341_send_data_8bits(xStar>>8);				//先写高8位
+  ili9341_send_data_8bits(xStar&0x00FF);			//再写低8位
+  //参数EC[15:0]	->	设置窗口X轴结束的列地址，因为参数xWidth是窗口长度，所以要转为列地址再发送
+  ili9341_send_data_8bits((xStar+xWidth-1)>>8);				//先写高8位
+  ili9341_send_data_8bits((xStar+xWidth-1)&0x00FF);			//再写低8位
+
+  ili9341_send_cmd(ILI9341_PASET);		//发送设置Y轴坐标的命令0x2B
+  //参数SP[15:0]	->	设置起始行地址，也就是设置Y轴起始坐标
+  ili9341_send_data_8bits(yStar>>8);				//先写高8位
+  ili9341_send_data_8bits(yStar&0x00FF);			//再写低8位
+  //参数EP[15:0]	->	设置窗口Y轴结束的列地址，因为参数yHeight是窗口高度，所以要转为行地址再发送
+  ili9341_send_data_8bits((yStar+yHeight-1)>>8);				//先写高8位
+  ili9341_send_data_8bits((yStar+yHeight-1)&0x00FF);			//再写低8位
+
+  ili9341_send_cmd(ILI9341_RAMWR);			//开始往GRAM里写数据，写GRAM的指令为0x2C
+
+
+  for(i = xStar; i < (xStar+xWidth); i++)
+  {
+    for(j = 0; j < (yStar+yHeight); j++)
+    {
+      //ili9341_send_data_8bits(0xF8);()
+      spi_color_9bits(color);
+      spi_color_9bits(color);
+      spi_color_9bits(color);
+      color++;
+    }
+  }
+}
+
+void ili9341_init(void)
+{
+  //Initialize non-SPI GPIOs
+  gpio_pad_select_gpio(ILI9341_DC);
+  gpio_set_direction(ILI9341_DC, GPIO_MODE_OUTPUT);
+
+  gpio_pad_select_gpio(CONFIG_LV_DISP_SPI_MOSI);
+  gpio_set_direction(CONFIG_LV_DISP_SPI_MOSI, GPIO_MODE_OUTPUT);
+
+  gpio_pad_select_gpio(CONFIG_LV_DISP_SPI_CLK);
+  gpio_set_direction(CONFIG_LV_DISP_SPI_CLK, GPIO_MODE_OUTPUT);
+
+  gpio_pad_select_gpio(CONFIG_LV_DISP_SPI_CS);
+  gpio_set_direction(CONFIG_LV_DISP_SPI_CS, GPIO_MODE_OUTPUT);
+
+#if ILI9341_USE_RST
+  gpio_pad_select_gpio(ILI9341_RST);
+  gpio_set_direction(ILI9341_RST, GPIO_MODE_OUTPUT);
+
+  //Reset the display
+  gpio_set_level(ILI9341_RST, 0);
+  vTaskDelay(100 / portTICK_RATE_MS);
+  gpio_set_level(ILI9341_RST, 1);
+  vTaskDelay(100 / portTICK_RATE_MS);
+#endif
+
+  ESP_LOGI(TAG, "Initialization.");
+  reg_init();
+
+  ili9341_set_orientation(CONFIG_LV_DISPLAY_ORIENTATION);
+
+  ili9341_send_cmd(ILI9341_DISPOFF);
+  ili9341_send_cmd(ILI9341_DISPON);
+  lcd_set_windows(0,0,128,128);
+}
+
+
+void ili9341_flush(lv_disp_drv_t * drv, const lv_area_t * area, lv_color_t * color_map)
 {
 	uint8_t data[4];
 
 	/*Column addresses*/
-	ili9163c_send_cmd(ILI9163C_CASET);
+	ili9341_send_cmd(0x2A);
 	data[0] = (area->x1 >> 8) & 0xFF;
 	data[1] = area->x1 & 0xFF;
 	data[2] = (area->x2 >> 8) & 0xFF;
 	data[3] = area->x2 & 0xFF;
-	ili9163c_send_data(data, 4);
+	ili9341_send_data(data, 4);
 
 	/*Page addresses*/
-	ili9163c_send_cmd(ILI9163C_RASET);
+	ili9341_send_cmd(0x2B);
 	data[0] = (area->y1 >> 8) & 0xFF;
 	data[1] = area->y1 & 0xFF;
 	data[2] = (area->y2 >> 8) & 0xFF;
 	data[3] = area->y2 & 0xFF;
-	ili9163c_send_data(data, 4);
+	ili9341_send_data(data, 4);
 
 	/*Memory write*/
-	ili9163c_send_cmd(ILI9163C_RAMWR);
-
+	ili9341_send_cmd(0x2C);
 	uint32_t size = lv_area_get_width(area) * lv_area_get_height(area);
-
-	ili9163c_send_color((void *)color_map, size * 2);
+	ili9341_send_color((void*)color_map, size * 2);
 }
 
-void ili9163c_sleep_in()
+void ili9341_sleep_in()
 {
 	uint8_t data[] = {0x08};
-	ili9163c_send_cmd(ILI9163C_SLPIN);
-	ili9163c_send_data(&data, 1);
+	ili9341_send_cmd(0x10);
+	ili9341_send_data(&data, 1);
 }
 
-void ili9163c_sleep_out()
+void ili9341_sleep_out()
 {
 	uint8_t data[] = {0x08};
-	ili9163c_send_cmd(ILI9163C_SLPOUT);
-	ili9163c_send_data(&data, 1);
+	ili9341_send_cmd(0x11);
+	ili9341_send_data(&data, 1);
 }
 
 /**********************
  *   STATIC FUNCTIONS
  **********************/
 
-static void ili9163c_send_cmd(uint8_t cmd)
+
+static void spi_send_8bits(uint8_t data)
 {
-	disp_wait_for_pending_transactions();
-	gpio_set_level(ILI9163C_DC, 0); /*Command mode*/
-	disp_spi_send_data(&cmd, 1);
+    for (int i = 0; i < 8; i++) {
+        gpio_set_level(CONFIG_LV_DISP_SPI_CLK, 0);
+        gpio_set_level(CONFIG_LV_DISP_SPI_MOSI, data & 0x80);
+        data <<= 1;
+        gpio_set_level(CONFIG_LV_DISP_SPI_CLK, 1);
+    }
 }
 
-static void ili9163c_send_data(void *data, uint16_t length)
+static void spi_color_9bits(uint8_t color)
 {
-	disp_wait_for_pending_transactions();
-	gpio_set_level(ILI9163C_DC, 1); /*Data mode*/
-	disp_spi_send_data(data, length);
+    gpio_set_level(CONFIG_LV_DISP_SPI_CLK, 0);
+    gpio_set_level(CONFIG_LV_DISP_SPI_MOSI, 1);
+    gpio_set_level(CONFIG_LV_DISP_SPI_CLK, 1);
+    for (int i = 0; i < 8; i++) {
+        gpio_set_level(CONFIG_LV_DISP_SPI_CLK, 0);
+        gpio_set_level(CONFIG_LV_DISP_SPI_MOSI, color & 0x80);
+        color <<= 1;
+        gpio_set_level(CONFIG_LV_DISP_SPI_CLK, 1);
+    }
 }
 
-static void ili9163c_send_color(void *data, uint16_t length)
+static void ili9341_send_cmd(uint8_t cmd)
 {
-	disp_wait_for_pending_transactions();
-	gpio_set_level(ILI9163C_DC, 1); /*Data mode*/
-	disp_spi_send_colors(data, length);
+    //disp_wait_for_pending_transactions();
+    gpio_set_level(ILI9341_DC, 0);	 /*Command mode*/
+    //disp_spi_send_data(&cmd, 1);
+    spi_send_8bits(cmd);
 }
 
-static void ili9163c_set_orientation(uint8_t orientation)
+static void ili9341_send_data(void * data, uint16_t length)
 {
-	assert(orientation < 4);
+    disp_wait_for_pending_transactions();
+    gpio_set_level(ILI9341_DC, 1);	 /*Data mode*/
+    //disp_spi_send_data(data, length);
+    spi_send_8bits(data);
+}
 
-	const char *orientation_str[] = {
-		"PORTRAIT", "PORTRAIT_INVERTED", "LANDSCAPE", "LANDSCAPE_INVERTED"};
+static void ili9341_send_data_8bits(uint8_t data)
+{
+    //disp_wait_for_pending_transactions();
+    gpio_set_level(ILI9341_DC, 1);	 /*Data mode*/
+    //disp_spi_send_data(data, length);
+    spi_send_8bits(data);
+}
 
-	ESP_LOGD(TAG, "Display orientation: %s", orientation_str[orientation]);
+static void ili9341_send_color(void * data, uint16_t length)
+{
+    disp_wait_for_pending_transactions();
+    gpio_set_level(ILI9341_DC, 1);   /*Data mode*/
+    //disp_spi_send_colors(data, length);
+    spi_send_8bits(data);
+}
 
-	uint8_t data[] = {0x48, 0x88, 0xA8, 0x68};
+static void ili9341_send_color_8bits(uint8_t data)
+{
+    //disp_wait_for_pending_transactions();
+    gpio_set_level(ILI9341_DC, 1);   /*Data mode*/
+    //disp_spi_send_colors(data, length);
+    spi_send_8bits(data);
+}
 
-	ili9163c_send_cmd(ILI9163C_MADCTL);
-	ili9163c_send_data((void *)&data[orientation], 1);
+static void ili9341_set_orientation(uint8_t orientation)
+{
+    // ESP_ASSERT(orientation < 4);
+
+    const char *orientation_str[] = {
+        "PORTRAIT", "PORTRAIT_INVERTED", "LANDSCAPE", "LANDSCAPE_INVERTED"
+    };
+
+    ESP_LOGI(TAG, "Display orientation: %s", orientation_str[orientation]);
+
+#if defined CONFIG_LV_PREDEFINED_DISPLAY_M5STACK
+    uint8_t data[] = {0x68, 0x68, 0x08, 0x08};
+#elif defined (CONFIG_LV_PREDEFINED_DISPLAY_M5CORE2)
+	uint8_t data[] = {0x08, 0x88, 0x28, 0xE8};
+#elif defined (CONFIG_LV_PREDEFINED_DISPLAY_WROVER4)
+    uint8_t data[] = {0x6C, 0xEC, 0xCC, 0x4C};
+#elif defined (CONFIG_LV_PREDEFINED_DISPLAY_NONE)
+    uint8_t data[] = {0x48, 0x88, 0x28, 0xE8};
+#endif
+
+    ESP_LOGI(TAG, "0x36 command value: 0x%02X", data[orientation]);
+
+    ili9341_send_cmd(0x36);
+    ili9341_send_data((void *) &data[orientation], 1);
 }
